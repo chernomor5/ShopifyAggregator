@@ -89,6 +89,7 @@ class DailyChargeAdjustmentAggregator:
                 "Net": 0.0,
                 "OrderGross": 0.0,
                 "Subtotal": 0.0,
+                "Transaction Count": len(records),  # Count of all transactions in the day
                 "OtherTypes": [],
                 "OtherTypeOrders": []
             }

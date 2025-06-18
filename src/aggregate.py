@@ -83,6 +83,7 @@ class MonthlyChargeAdjustmentAggregator:
                 "Refund": 0.0,
                 "Discount": 0.0,
                 "Other": 0.0,
+                "Transaction Count": len(records),  # Count of all transactions in the month
                 "OtherTypes": [],
                 "OtherTypeOrders": []
             }
