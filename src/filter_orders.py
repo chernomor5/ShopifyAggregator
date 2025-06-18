@@ -52,6 +52,18 @@ class OrderFilter:
                         self.filtered_data.append(entry)
                         self.seen_names.add(name)
 
+                # Only create Tax Breakdown if 'Tax 1 Name' exists and is non-empty
+                if row.get('Tax 1 Name'):
+                    tax_breakdown = {}
+                    for i in range(1, 6):
+                        tax_name = row.get(f'Tax {i} Name', '')
+                        tax_value = row.get(f'Tax {i} Value', '')
+                        if tax_name and tax_value:
+                            tax_breakdown[tax_name] = tax_value
+                    if tax_breakdown:  # Only add if non-empty
+                        entry['Tax Breakdown'] = tax_breakdown
+
+
     def filter_orders(self):
         """Process and clean the input file, retaining only valid orders based on date and data presence."""
         self.process_file(self.input_file)
