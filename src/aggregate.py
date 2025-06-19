@@ -23,6 +23,7 @@ class MonthlyChargeAdjustmentAggregator:
         self.processed_data = []
         self.monthly_buckets = defaultdict(list)
         self.aggregated_result = []
+        self.taxes_by_state_aggregated = []
 
         self.output_intermediate_json = self.fm.get_path(config["intermediate_aggregation_json"], "json")
         self.output_intermediate_csv = self.fm.get_path(config["intermediate_aggregation_csv"], "csv")
@@ -113,6 +114,11 @@ class MonthlyChargeAdjustmentAggregator:
                     if "Order" in r:
                         other_orders.add(r["Order"])
 
+            taxes_by_state = self.state_tax_aggregator(records)
+            sorted_taxes_by_state = {key: taxes_by_state[key] for key in sorted(taxes_by_state.keys())}
+            sorted_taxes_by_state["Month"] = month
+            self.taxes_by_state_aggregated.append(sorted_taxes_by_state)
+
             summary["Total"] = (
                 summary["Amount"]
                 - summary["Fee"]
@@ -128,12 +134,36 @@ class MonthlyChargeAdjustmentAggregator:
             summary["OtherTypeOrders"] = sorted(other_orders)
             self.aggregated_result.append(summary)
 
+    def state_tax_aggregator(self, merged_transactions):
+        # Initialize empty dictionary for aggregated state taxes
+        aggregated_state_tax = {}
+        
+        # Iterate through each item in merged_transactions
+        for item in merged_transactions:
+            # Check if item has "Tax Breakdown" key
+            if "Tax Breakdown" in item and "Taxes" in item and float(item["Taxes"]) > 0:
+                # Iterate through each key-value pair in Tax Breakdown
+                for state, tax_amount in item["Tax Breakdown"].items():
+                    # If state not in aggregated_state_tax, add it
+                    if state not in aggregated_state_tax:
+                        aggregated_state_tax[state] = float(tax_amount)
+                    # If state exists, sum the tax amount
+                    else:
+                        aggregated_state_tax[state] = aggregated_state_tax[state] + float(tax_amount)
+        
+        for item in aggregated_state_tax:
+            aggregated_state_tax[item] = round(aggregated_state_tax[item], 2)
+        # Return the aggregated dictionary
+        return aggregated_state_tax
+
     def save_outputs(self):
         """Save normalized and aggregated outputs to configured paths."""
         self.fm.save_json(self.processed_data, config["intermediate_aggregation_json"])
         self.fm.save_csv(self.processed_data, config["intermediate_aggregation_csv"])
         self.fm.save_json(self.aggregated_result, config["aggregated_json"], copy_to_root=True)
         self.fm.save_csv(self.aggregated_result, config["aggregated_csv"], copy_to_root=True)
+        self.fm.save_json(self.taxes_by_state_aggregated, config["tax_by_state_aggregation_json"], copy_to_root=True)
+        self.fm.save_csv(self.taxes_by_state_aggregated, config["tax_by_state_aggregation_csv"], copy_to_root=True)        
 
     def run(self):
         """Full ETL run."""

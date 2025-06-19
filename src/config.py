@@ -60,6 +60,10 @@ config = {
     "intermediate_aggregation_csv": "intermit_aggregation.csv",
     "intermediate_aggregation_json": "intermit_aggregation.json",
 
+    # ➤ Produced by: MonthlyAggregator (intermediate output)
+    "tax_by_state_aggregation_csv": "tax_by_state_aggregation.csv",
+    "tax_by_state_aggregation_json": "tax_by_state_aggregation.json",
+
     # --------------------
     # Mandatory Fields Required for Processing
     # --------------------
