@@ -1,27 +1,23 @@
 import json
-import csv
 from collections import defaultdict, Counter
 from config import config
 from utils import parse_iso_datetime, format_datetime
 
 
-class MonthlyChargeAdjustmentAggregator:
+class ChargeAdjustmentAggregatorBase:
     """
-    Aggregates monthly data from matched_orders.json with logic to zero out
-    shipping and taxes for grouped charges where total amount <= 0.
-    Produces a detailed monthly financial summary.
+    Abstract base class for charge adjustment aggregators.
+    Handles common ETL steps and aggregation logic.
+    Subclasses should implement specific time-based grouping and summary logic.
     """
 
     def __init__(self, file_manager, input_file=None):
-        """
-        :param file_manager: Instance of FileManager
-        :param input_file: Optional override of input file path
-        """
+        """Initialize file paths, buckets, and results."""
         self.fm = file_manager
         self.input_file = input_file or self.fm.get_path(config["matched_orders_json"], "json")
 
         self.processed_data = []
-        self.monthly_buckets = defaultdict(list)
+        self.buckets = defaultdict(list)
         self.aggregated_result = []
         self.taxes_by_state_aggregated = []
 
@@ -31,7 +27,7 @@ class MonthlyChargeAdjustmentAggregator:
         self.output_aggregated_csv = self.fm.get_path(config["aggregated_csv"], "csv")
 
     def load_data(self):
-        """Load and parse input JSON with datetime conversion."""
+        """Load and parse input JSON file with datetime conversion."""
         with open(self.input_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         for item in data:
@@ -40,8 +36,8 @@ class MonthlyChargeAdjustmentAggregator:
 
     def normalize_shipping_and_taxes(self, records):
         """
-        If a transaction has a 'Name' field, find all matching 'Order' transactions.
-        If their combined Amount <= 0, set Shipping and Taxes = 0 on all charge-type transactions.
+        Normalize transactions by setting Shipping and Taxes to 0 if grouped charges total <= 0.
+        Applies only to related charge-type transactions.
         """
         order_map = defaultdict(list)
         for entry in records:
@@ -59,119 +55,161 @@ class MonthlyChargeAdjustmentAggregator:
                                 tx["Shipping"] = 0
                                 tx["Taxes"] = 0
 
-    def bucket_by_month(self, data):
-        """Group data by month in YYYY-MM format."""
-        self.monthly_buckets.clear()
-        for item in data:
-            key = item["Transaction Date"].strftime("%Y-%m")
-            self.monthly_buckets[key].append(item)
-
     def finalize_dates(self, records):
-        """Convert datetime fields back to string for saving."""
+        """Convert datetime objects back to formatted strings."""
         for item in records:
             item["Transaction Date"] = format_datetime(item["Transaction Date"])
 
-    def aggregate(self):
-        """Generate monthly financial summaries rounded to 2 decimal places."""
-        for month, records in self.monthly_buckets.items():
-            summary = {
-                "Month": month,
-                "Amount": 0.0,
-                "Fee": 0.0,
-                "Shipping": 0.0,
-                "Taxes": 0.0,
-                "Total": 0.0,
-                "Refund": 0.0,
-                "Discount": 0.0,
-                "Other": 0.0,
-                "Transaction Count": len(records),  # Count of all transactions in the month
-                "OtherTypes": [],
-                "OtherTypeOrders": []
-            }
-
-            other_types = Counter()
-            other_orders = set()
-
-            for r in records:
-                tx_type = r.get("Type", "").lower()
-                amount = float(r.get("Amount", 0))
-                fee = float(r.get("Fee", 0))
-                shipping = float(r.get("Shipping", 0))
-                taxes = float(r.get("Taxes", 0))
-                discount = float(r.get("Discount Amount", 0))
-
-                summary["Amount"] += amount
-                summary["Fee"] += fee
-                summary["Shipping"] += shipping
-                summary["Taxes"] += taxes
-                summary["Discount"] += discount
-
-                if tx_type == "refund":
-                    summary["Refund"] += amount
-                elif tx_type not in ("refund", "charge"):
-                    summary["Other"] += amount
-                    other_types[tx_type] += 1
-                    if "Order" in r:
-                        other_orders.add(r["Order"])
-
-            taxes_by_state = self.state_tax_aggregator(records)
-            sorted_taxes_by_state = {key: taxes_by_state[key] for key in sorted(taxes_by_state.keys())}
-            sorted_taxes_by_state["Month"] = month
-            self.taxes_by_state_aggregated.append(sorted_taxes_by_state)
-
-            summary["Total"] = (
-                summary["Amount"]
-                - summary["Fee"]
-                - summary["Shipping"]
-                - summary["Taxes"]
-            )
-
-            # ✅ Round numeric fields to 2 decimal places
-            for key in ["Amount", "Fee", "Shipping", "Taxes", "Total", "Refund", "Discount", "Other"]:
-                summary[key] = round(summary[key], 2)
-
-            summary["OtherTypes"] = list(other_types.keys())
-            summary["OtherTypeOrders"] = sorted(other_orders)
-            self.aggregated_result.append(summary)
-
     def state_tax_aggregator(self, merged_transactions):
-        # Initialize empty dictionary for aggregated state taxes
+        """Aggregate tax breakdowns by U.S. state from individual transaction records."""
         aggregated_state_tax = {}
-        
-        # Iterate through each item in merged_transactions
         for item in merged_transactions:
-            # Check if item has "Tax Breakdown" key
             if "Tax Breakdown" in item and "Taxes" in item and float(item["Taxes"]) > 0:
-                # Iterate through each key-value pair in Tax Breakdown
                 for state, tax_amount in item["Tax Breakdown"].items():
-                    # If state not in aggregated_state_tax, add it
-                    if state not in aggregated_state_tax:
-                        aggregated_state_tax[state] = float(tax_amount)
-                    # If state exists, sum the tax amount
-                    else:
-                        aggregated_state_tax[state] = aggregated_state_tax[state] + float(tax_amount)
-        
-        for item in aggregated_state_tax:
-            aggregated_state_tax[item] = round(aggregated_state_tax[item], 2)
-        # Return the aggregated dictionary
-        return aggregated_state_tax
+                    aggregated_state_tax[state] = aggregated_state_tax.get(state, 0) + float(tax_amount)
+        return {k: round(v, 2) for k, v in aggregated_state_tax.items()}
 
     def save_outputs(self):
-        """Save normalized and aggregated outputs to configured paths."""
+        """Save processed and aggregated data to configured output paths."""
         self.fm.save_json(self.processed_data, config["intermediate_aggregation_json"])
         self.fm.save_csv(self.processed_data, config["intermediate_aggregation_csv"])
         self.fm.save_json(self.aggregated_result, config["aggregated_json"], copy_to_root=True)
         self.fm.save_csv(self.aggregated_result, config["aggregated_csv"], copy_to_root=True)
         self.fm.save_json(self.taxes_by_state_aggregated, config["tax_by_state_aggregation_json"], copy_to_root=True)
-        self.fm.save_csv(self.taxes_by_state_aggregated, config["tax_by_state_aggregation_csv"], copy_to_root=True)        
+        self.fm.save_csv(self.taxes_by_state_aggregated, config["tax_by_state_aggregation_csv"], copy_to_root=True)
+
+    def bucket_key(self, item):
+        """Abstract method: extract the grouping key (e.g. by month or day)."""
+        raise NotImplementedError
+
+    def summarize_record_group(self, key, records):
+        """Abstract method: summarize a group of records by the key."""
+        raise NotImplementedError
+
+    def bucket_data(self, data):
+        """Group data into buckets using the key returned by bucket_key()."""
+        self.buckets.clear()
+        for item in data:
+            key = self.bucket_key(item)
+            self.buckets[key].append(item)
+
+    def aggregate(self):
+        """Create summaries for each bucketed group."""
+        for key, records in self.buckets.items():
+            summary = self.summarize_record_group(key, records)
+            self.aggregated_result.append(summary)
 
     def run(self):
-        """Full ETL run."""
+        """Execute full ETL pipeline: load, normalize, group, aggregate, and save."""
         data = self.load_data()
         self.normalize_shipping_and_taxes(data)
-        self.bucket_by_month(data)
+        self.bucket_data(data)
         self.finalize_dates(data)
         self.processed_data = data
         self.aggregate()
         self.save_outputs()
-        print("✅ MonthlyChargeAdjustmentAggregator completed.")
+
+
+class MonthlyChargeAdjustmentAggregator(ChargeAdjustmentAggregatorBase):
+    """Aggregates monthly financial summaries from charge data."""
+
+    def bucket_key(self, item):
+        """Extract YYYY-MM from transaction date."""
+        return item["Transaction Date"].strftime("%Y-%m")
+
+    def summarize_record_group(self, key, records):
+        """Summarize all transaction records for a given month."""
+        summary = {
+            "Month": key,
+            "Amount": 0.0, "Fee": 0.0, "Shipping": 0.0, "Taxes": 0.0,
+            "Total": 0.0, "Refund": 0.0, "Discount": 0.0, "Other": 0.0,
+            "Transaction Count": len(records),
+            "OtherTypes": [], "OtherTypeOrders": []
+        }
+        other_types = Counter()
+        other_orders = set()
+
+        for r in records:
+            tx_type = r.get("Type", "").lower()
+            summary["Amount"] += float(r.get("Amount", 0))
+            summary["Fee"] += float(r.get("Fee", 0))
+            summary["Shipping"] += float(r.get("Shipping", 0))
+            summary["Taxes"] += float(r.get("Taxes", 0))
+            summary["Discount"] += float(r.get("Discount Amount", 0))
+
+            if tx_type == "refund":
+                summary["Refund"] += float(r.get("Amount", 0))
+            elif tx_type not in ("refund", "charge"):
+                summary["Other"] += float(r.get("Amount", 0))
+                other_types[tx_type] += 1
+                if "Order" in r:
+                    other_orders.add(r["Order"])
+
+        taxes_by_state = self.state_tax_aggregator(records)
+        taxes_by_state["Month"] = key
+        self.taxes_by_state_aggregated.append({k: taxes_by_state[k] for k in sorted(taxes_by_state)})
+
+        summary["Total"] = summary["Amount"] - summary["Fee"] - summary["Shipping"] - summary["Taxes"]
+
+        for k in ["Amount", "Fee", "Shipping", "Taxes", "Total", "Refund", "Discount", "Other"]:
+            summary[k] = round(summary[k], 2)
+
+        summary["OtherTypes"] = list(other_types.keys())
+        summary["OtherTypeOrders"] = sorted(other_orders)
+        return summary
+
+
+class DailyChargeAdjustmentAggregator(ChargeAdjustmentAggregatorBase):
+    """Aggregates daily financial summaries from charge data with more fields."""
+
+    def bucket_key(self, item):
+        """Extract YYYY-MM-DD from transaction date."""
+        return item["Transaction Date"].strftime("%Y-%m-%d")
+
+    def summarize_record_group(self, key, records):
+        """Summarize all transaction records for a given day."""
+        summary = {
+            "Day": key,
+            "Amount": 0.0, "Fee": 0.0, "Shipping": 0.0, "Taxes": 0.0,
+            "Total": 0.0, "Refund": 0.0, "Discount": 0.0, "Other": 0.0,
+            "Net": 0.0, "OrderGross": 0.0, "Subtotal": 0.0,
+            "Transaction Count": len(records),
+            "OtherTypes": [], "OtherTypeOrders": []
+        }
+        other_types = Counter()
+        other_orders = set()
+
+        for r in records:
+            tx_type = r.get("Type", "").lower()
+            summary["Amount"] += float(r.get("Amount", 0))
+            summary["Fee"] += float(r.get("Fee", 0))
+            summary["Shipping"] += float(r.get("Shipping", 0))
+            summary["Taxes"] += float(r.get("Taxes", 0))
+            summary["Discount"] += float(r.get("Discount Amount", 0))
+            summary["Net"] += float(r.get("Net", 0))
+            summary["Subtotal"] += float(r.get("Subtotal", 0))
+            summary["OrderGross"] += float(r.get("Total", 0))
+
+            if tx_type == "refund":
+                summary["Refund"] += float(r.get("Amount", 0))
+            elif tx_type not in ("refund", "charge"):
+                summary["Other"] += float(r.get("Amount", 0))
+                other_types[tx_type] += 1
+                if "Order" in r:
+                    other_orders.add(r["Order"])
+
+        taxes_by_state = self.state_tax_aggregator(records)
+        taxes_by_state["Day"] = key
+        self.taxes_by_state_aggregated.append({k: taxes_by_state[k] for k in sorted(taxes_by_state)})
+
+        summary["Total"] = summary["Amount"] - summary["Fee"] - summary["Shipping"] - summary["Taxes"]
+
+        for k in [
+            "Amount", "Fee", "Shipping", "Taxes", "Total", "Refund",
+            "Discount", "Other", "Net", "OrderGross", "Subtotal"
+        ]:
+            summary[k] = round(summary[k], 2)
+
+        summary["OtherTypes"] = list(other_types.keys())
+        summary["OtherTypeOrders"] = sorted(other_orders)
+        return summary

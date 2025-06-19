@@ -9,7 +9,7 @@ from csv_combiner import CSVCombiner
 from filter_orders import OrderFilter
 from transactions import TransactionProcessor
 from merged_orders_transactions import OrderTransactionMerger
-from aggregate_daily import DailyChargeAdjustmentAggregator
+from aggregate import DailyChargeAdjustmentAggregator
 from config import config  # ✅ Import shared config
 
 class DataPipelineManager:
